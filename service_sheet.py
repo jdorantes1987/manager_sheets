@@ -1,12 +1,27 @@
+import os
+from pathlib import Path
+
+import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 
 class ServiceSheet:
-    def __init__(self, spreadsheet_id, sheet_name, credentials_file):
+    def __init__(self, spreadsheet_id, file_name, credentials_file):
         self.__spreadsheet_id = spreadsheet_id
-        self.__sheet_name = sheet_name
+        self.__file_name = file_name
         self.__credentials_file = credentials_file
+        # Validar que se haya pasado una ruta de credenciales
+        if not self.__credentials_file:
+            raise ValueError(
+                "Credentials file path is required. Set environment variable CGIMPRENTA_CREDENTIALS or pass a valid path."
+            )
+        # Aceptar rutas relativas y absolutas; verificar existencia
+        if not os.path.isfile(self.__credentials_file):
+            raise FileNotFoundError(
+                f"Credentials file not found: {self.__credentials_file}"
+            )
+
         self.__service = self._get_service()
 
     def _get_service(self):
@@ -16,83 +31,42 @@ class ServiceSheet:
         )
         return build("sheets", "v4", credentials=creds)
 
-    def get_spreadsheet_id(self):
-        return self.__spreadsheet_id
+    def get_spreadsheet(self):
+        # Autenticación y acceso a Google Sheets usando google-auth
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
 
-    def get_sheet_name(self):
-        return self.__sheet_name
+        # Determine credential source: explicit, env var, or default key.json
+        cred_source = self.__credentials_file
+        if cred_source is None:
+            cred_source = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
 
-    def get_credentials_file(self):
-        return self.__credentials_file
+        if cred_source is None:
+            default_path = Path(__file__).resolve().parent / "key.json"
+            print(default_path)
+            if default_path.exists():
+                cred_source = str(default_path)
 
-    def get_service(self):
-        return self.__service
+        if cred_source is None:
+            raise ValueError(
+                "No service account credentials provided. Set `credentials_file`, "
+                "export GOOGLE_APPLICATION_CREDENTIALS, or place `key.json` next to manager_sheet.py"
+            )
 
+        # Create credentials depending on the type of cred_source
+        if isinstance(cred_source, dict):
+            creds = Credentials.from_service_account_info(cred_source, scopes=scopes)
+        elif isinstance(cred_source, (str, bytes, os.PathLike)):
+            print(str(cred_source))
+            creds = Credentials.from_service_account_file(
+                str(cred_source), scopes=scopes
+            )
+        else:
+            raise TypeError(
+                f"credentials_file must be dict, str, bytes or os.PathLike, not {type(cred_source)}"
+            )
 
-#     def clear_clientes_data(self):
-#         range_to_clear = f"{self.sheet_name}!2:1000"  # Ajusta 1000 si esperas más filas
-#         request = (
-#             self.service.spreadsheets()
-#             .values()
-#             .clear(spreadsheetId=self.spreadsheet_id, range=range_to_clear, body={})
-#         )
-#         response = request.execute()
-#         return response
-
-#     def update_clientes_sheet(self, conexion):
-#         self.clear_clientes_data()
-#         oClientesProfit = ClientesProfit(conexion=conexion)
-#         data = oClientesProfit.get_clientes()
-#         data = data[
-#             (data["inactivo"] == 0) & (data["tipo_adi"] <= 2)
-#         ]  # Filtrar clientes no anulados y los que no son sucursales
-#         data = data[["rif", "cli_des", "email", "telefonos", "direc1"]]
-#         if not data.empty:
-#             # actualizar la hoja de Google Sheets con los datos de clientes desde la fila 2
-#             self.service.spreadsheets().values().update(
-#                 spreadsheetId=self.spreadsheet_id,
-#                 range=f"{self.sheet_name}!A2",
-#                 valueInputOption="RAW",
-#                 body={"values": data.values.tolist()},
-#             ).execute()
-
-
-# if __name__ == "__main__":
-#     import os
-#     import sys
-
-#     from dotenv import load_dotenv
-
-#     sys.path.append("../conexiones")
-
-#     from conn.database_connector import DatabaseConnector
-#     from conn.sql_server_connector import SQLServerConnector
-
-#     env_path = os.path.join("../conexiones", ".env")
-#     load_dotenv(
-#         dotenv_path=env_path,
-#         override=True,
-#     )  # Recarga las variables de entorno desde el archivo
-
-#     # Para SQL Server
-#     sqlserver_connector = SQLServerConnector(
-#         host=os.getenv("HOST_PRODUCCION_PROFIT"),
-#         database=os.getenv("DB_NAME_DERECHA_PROFIT"),
-#         user=os.getenv("DB_USER_PROFIT"),
-#         password=os.getenv("DB_PASSWORD_PROFIT"),
-#     )
-
-#     # Usa variables de entorno o reemplaza por tus valores
-#     SPREADSHEET_ID = os.getenv("GOOGLE_SHEET_FACTURACION_ID")
-#     SHEET_NAME = os.getenv("GOOGLE_SHEET_CLIENTES_NAME", "clientes")
-#     CREDENTIALS_FILE = os.getenv("CGIMPRENTA_CREDENTIALS")
-
-#     oClientesManager = ClientesSheetManager(
-#         SPREADSHEET_ID, SHEET_NAME, CREDENTIALS_FILE
-#     )
-#     try:
-#         db = DatabaseConnector(sqlserver_connector)
-#         oClientesManager.update_clientes_sheet(db)
-#         print("Hoja de clientes actualizada correctamente.")
-#     except Exception as e:
-#         print(f"Error al actualizar la hoja de clientes: {e}")
+        client = gspread.authorize(creds)
+        return client.open(self.__file_name)
